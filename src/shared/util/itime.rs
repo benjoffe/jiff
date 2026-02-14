@@ -47,9 +47,16 @@ impl ITimestamp {
     #[cfg_attr(feature = "perf-inline", inline(always))]
     pub(crate) const fn to_datetime(&self, offset: IOffset) -> IDateTime {
         let ITimestamp { mut second, mut nanosecond } = *self;
-        second += offset.second as i64;
-        let mut epoch_day = second.div_euclid(86_400) as i32;
-        second = second.rem_euclid(86_400);
+        
+        // Shift second comfortably into the postive domain
+        // so that division and remainder can be faster.
+        const DAY_SHIFT: i32 = 30 * 146097; // 30 * 400 years: 12,000 yr range > [-9,999..1970]
+        const SEC_SHIFT: i64 = (DAY_SHIFT as i64) * 86_400;
+
+        let pos_sec = (second + (offset.second as i64) + SEC_SHIFT) as u64;
+        let mut epoch_day = (pos_sec / 86_400) as i32;
+        second = (pos_sec % 86_400) as i64;
+        
         if nanosecond < 0 {
             if second > 0 {
                 second -= 1;
@@ -60,6 +67,8 @@ impl ITimestamp {
                 nanosecond += 1_000_000_000;
             }
         }
+
+        epoch_day -= DAY_SHIFT;
 
         let date = IEpochDay { epoch_day }.to_date();
         let mut time = ITimeSecond { second: second as i32 }.to_time();
@@ -539,7 +548,7 @@ pub(crate) struct ITimeSecond {
 impl ITimeSecond {
     #[cfg_attr(feature = "perf-inline", inline(always))]
     pub(crate) const fn to_time(&self) -> ITime {
-        let mut second = self.second;
+        let mut second = self.second as u32;
         let mut time = ITime::ZERO;
         if second != 0 {
             time.hour = (second / 3600) as i8;
