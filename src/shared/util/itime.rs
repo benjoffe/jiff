@@ -174,37 +174,50 @@ impl IEpochDay {
 
     /// Converts days since the Unix epoch to a Gregorian date.
     ///
-    /// This is Neri-Schneider. There's no branching or divisions.
+    /// Ben Joffe's fast date algorithm. No branching or divisions.
+    /// Accurate over the range -10,701-07-13 to 10,713-01-30, which
+    /// slightly exceeds the required range of Jiff.
     ///
-    /// Ref: <https://github.com/cassioneri/eaf/blob/684d3cc32d14eee371d0abe4f683d6d6a49ed5c1/algorithms/neri_schneider.hpp#L40C3-L40C34>
+    /// Ref: <https://github.com/benjoffe/fast-date-benchmarks/blob/f9a0eb142bc12776eb6c04f04f768a47b5ed5de3/algorithms/benjoffe_fast64_v2.hpp>
     #[cfg_attr(feature = "perf-inline", inline(always))]
     #[allow(non_upper_case_globals, non_snake_case)] // to mimic source
     pub(crate) const fn to_date(&self) -> IDate {
-        const s: u32 = 82;
-        const K: u32 = 719468 + 146097 * s;
-        const L: u32 = 400 * s;
+        // Different variable sizes have varying performance
+        // characteristics across achitectures. These are used only
+        // in places where they do not vary the results.
+        #[cfg(target_arch = "x86_64")]
+        type UXX = u32;
+        #[cfg(not(target_arch = "x86_64"))]
+        type UXX = u64;
 
-        let N_U = self.epoch_day as u32;
-        let N = N_U.wrapping_add(K);
+        const D_SHIFT: i64 = -146097 * 163 + 719469;
+        const Y_SHIFT: u64 = 400 * 163;
+        const CEN_MUL: i128 = 505054698555331;     // floor(2^64 / 36524.25)
+        const YRS_MUL: i128 = 0xb36d83a3100000;    // floor(2^64 / 365.25) + BIAS
+        const YPT_MUL: u128 = 3056;                // ceil(365.25 / 30.6 * 256)
+        const DAY_MUL: u128 = 2204962377560594841; // floor(2^64 * 30.6 / 256)
 
-        let N_1 = 4 * N + 3;
-        let C = N_1 / 146097;
-        let N_C = (N_1 % 146097) / 4;
+        let neg = D_SHIFT + self.epoch_day as i64;
+        let cen = (CEN_MUL * neg as i128 >> 64) as i64;
+        let jul = neg + cen - (cen >> 2);
 
-        let N_2 = 4 * N_C + 3;
-        let P_2 = 2939745 * (N_2 as u64);
-        let Z = (P_2 / 4294967296) as u32;
-        let N_Y = (P_2 % 4294967296) as u32 / 2939745 / 4;
-        let Y = 100 * C + Z;
+        let y_p = YRS_MUL * jul as i128;
+        let yrs = (y_p >> 64) as i64;
+        let low = y_p as u64;
 
-        let N_3 = 2141 * N_Y + 197913;
-        let M = N_3 / 65536;
-        let D = (N_3 % 65536) / 2141;
+        let ypt = (YPT_MUL * low as u128 >> 64) as UXX;
+        let bump = (ypt > 10 * 256) as UXX;
+        let shift = if bump != 0 {
+            (765 as UXX).wrapping_sub(12 * 256)
+        } else {
+            765 as UXX
+        };
+        let m_d = ((yrs as UXX & 3) * 2 + ypt).wrapping_add(shift);
+        let (m_d, bump) = (m_d as u64, bump as u64);
+        let month = (m_d / 256) as i8;
+        let day = ((m_d % 256) as u128 * DAY_MUL >> 64) as i8 + 1;
+        let year = (yrs + (bump + Y_SHIFT) as i64) as i16;
 
-        let J = N_Y >= 306;
-        let year = Y.wrapping_sub(L).wrapping_add(J as u32) as i16;
-        let month = (if J { M - 12 } else { M }) as i8;
-        let day = (D + 1) as i8;
         IDate { year, month, day }
     }
 
