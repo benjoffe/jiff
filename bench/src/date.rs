@@ -12,6 +12,8 @@ pub(super) fn define(c: &mut Criterion) {
     day_of_year_get(c);
     days_in_month(c);
     difference_days(c);
+    nth_weekday_of_month(c);
+    nth_weekday(c);
     tomorrow(c);
     yesterday(c);
 }
@@ -251,6 +253,104 @@ fn difference_days(c: &mut Criterion) {
         benchmark(c, format!("{NAME}/duration/time"), |b| {
             b.iter(|| {
                 let got = (bb(date2) - bb(date1)).whole_days();
+                assert_eq!(got, expected);
+            })
+        });
+    }
+}
+
+/// Measures the timing for finding the nth weekday of a month.
+///
+/// Compares jiff's `Date::nth_weekday_of_month` against chrono's
+/// `NaiveDate::from_weekday_of_month_opt` for the positive-nth case.
+/// Chrono has no API for negative nth (last weekday), so that variant is
+/// jiff-only.
+fn nth_weekday_of_month(c: &mut Criterion) {
+    const NAME: &str = "date/nth_weekday_of_month";
+
+    // 2nd Friday of June 2026 -> 2026-06-12
+    // (June 1 2026 is a Monday, so the 2nd Friday is June 12.)
+    let date = civil::date(2026, 6, 15);
+    let expected = civil::date(2026, 6, 12);
+    {
+        benchmark(c, format!("{NAME}/second/jiff"), |b| {
+            b.iter(|| {
+                let got =
+                    bb(date).nth_weekday_of_month(2, civil::Weekday::Friday).unwrap();
+                assert_eq!(got, expected);
+            })
+        });
+    }
+    {
+        let expected = chrono::NaiveDate::convert_from(expected);
+        benchmark(c, format!("{NAME}/second/chrono"), |b| {
+            b.iter(|| {
+                let got = chrono::NaiveDate::from_weekday_of_month_opt(
+                    bb(2026i32),
+                    bb(6u32),
+                    bb(chrono::Weekday::Fri),
+                    bb(2u8),
+                )
+                .unwrap();
+                assert_eq!(got, expected);
+            })
+        });
+    }
+
+    // Last Thursday of June 2026 -> 2026-06-25
+    // (Thursdays in June 2026: 4, 11, 18, 25.)
+    let expected = civil::date(2026, 6, 25);
+    {
+        benchmark(c, format!("{NAME}/last/jiff"), |b| {
+            b.iter(|| {
+                let got =
+                    bb(date).nth_weekday_of_month(-1, civil::Weekday::Thursday).unwrap();
+                assert_eq!(got, expected);
+            })
+        });
+    }
+}
+
+/// Measures the timing for finding the nth weekday relative to a date.
+///
+/// Jiff is the only library benchmarked here since neither chrono nor `time`
+/// expose a direct equivalent to `Date::nth_weekday`.
+fn nth_weekday(c: &mut Criterion) {
+    const NAME: &str = "date/nth_weekday";
+
+    // Next Friday after 2026-06-15 (Monday) -> 2026-06-19.
+    let date = civil::date(2026, 6, 15);
+    let expected = civil::date(2026, 6, 19);
+    {
+        benchmark(c, format!("{NAME}/next/jiff"), |b| {
+            b.iter(|| {
+                let got =
+                    bb(date).nth_weekday(1, civil::Weekday::Friday).unwrap();
+                assert_eq!(got, expected);
+            })
+        });
+    }
+
+    // Previous Saturday before 2026-06-15 (Monday) -> 2026-06-13.
+    let expected = civil::date(2026, 6, 13);
+    {
+        benchmark(c, format!("{NAME}/prev/jiff"), |b| {
+            b.iter(|| {
+                let got =
+                    bb(date).nth_weekday(-1, civil::Weekday::Saturday).unwrap();
+                assert_eq!(got, expected);
+            })
+        });
+    }
+
+    // 2nd next Thursday after 2026-06-15 (Monday) -> 2026-06-25.
+    // (Thursdays after June 15: 18, 25.)
+    let expected = civil::date(2026, 6, 25);
+    {
+        benchmark(c, format!("{NAME}/second-next/jiff"), |b| {
+            b.iter(|| {
+                let got =
+                    bb(date).nth_weekday(2, civil::Weekday::Thursday).unwrap();
                 assert_eq!(got, expected);
             })
         });
