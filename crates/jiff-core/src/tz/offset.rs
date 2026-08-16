@@ -160,36 +160,45 @@ impl Offset {
     ///
     /// The offset should correspond to the number of seconds required to
     /// add to this timestamp to get the local time.
+    ///
+    /// Uses a technique to extract hour, minute, second from the timestamp
+    /// directly, avoiding the need to ever calculate the remainder of
+    /// seconds within a day.
+    ///
+    /// Ref: https://www.benjoffe.com/fast-timestamp
     #[inline]
     pub const fn to_datetime(self, timestamp: Timestamp) -> civil::DateTime {
         let offset = self;
         let second = timestamp.as_second();
         let mut nanosecond = timestamp.subsec_nanosecond();
 
+        let nano_signbit: i32 = nanosecond >> 31;
+        nanosecond += 1_000_000_000 & nano_signbit;
+        let local = second + (offset.seconds() as i64) + (nano_signbit as i64);
+
         // Shift second comfortably into the postive domain
         // so that division and remainder can use unsigned math
         // which is much faster.
-        // 30 * 400 years: 12,000 yr range > [-9,999..1970]
-        // (146097 being the number of days per 400 years).
-        const DAY_SHIFT: i32 = 30 * 146097;
-        const SEC_SHIFT: i64 = (DAY_SHIFT as i64) * 86_400;
+        // We use a shift equal to K * 86400 from `UnixEpochDay::to_date`,
+        // that way, when we subtract it back and add it again in
+        // to_unix_epoch_day, both operations should merge to be a no-op.
+        const OFFSET: i32 = 719468 + 146097 * 82;
+        const S_SHIFT: i64 = 86_400 * OFFSET as i64;
+        const D_RECIP: u64 = u64::MAX / 86_400 + 1;
+        const H_RECIP: u64 = u64::MAX / 3_600 + 1;
+        const M_RECIP: u64 = u64::MAX / 60 + 1;
 
-        let pos_sec = (second + (offset.seconds() as i64) + SEC_SHIFT) as u64;
-        let mut epoch_day = (pos_sec / 86_400) as i32;
-        let mut second = (pos_sec % 86_400) as i32;
+        let tsec = (local + S_SHIFT) as u64;
+        let tday = ((tsec as u128 * D_RECIP as u128) >> 64) as u64;
+        let thrs = ((tsec as u128 * H_RECIP as u128) >> 64) as u64;
+        let tmin = ((tsec as u128 * M_RECIP as u128) >> 64) as u64;
 
-        if nanosecond < 0 {
-            if second > 0 {
-                second -= 1;
-                nanosecond += 1_000_000_000;
-            } else {
-                epoch_day -= 1;
-                second += 86_399;
-                nanosecond += 1_000_000_000;
-            }
-        }
-
-        epoch_day -= DAY_SHIFT;
+        // Cast before subtract to allow compiler to merge `- OFFSET`
+        // with `+ K` in UnixEpochDay::to_date
+        let epoch_day = (tday as i32) - OFFSET;
+        let hour   = (thrs - tday * 24) as i8;
+        let minute = (tmin - thrs * 60) as i8;
+        let second = (tsec - tmin * 60) as i8;
 
         // We should check whether having unchecked APIs
         // would be beneficial here. In particular, the
@@ -202,15 +211,9 @@ impl Offset {
             "always valid Unix epoch day",
         )
         .to_date();
-        let time = unwrapr!(
-            unwrapr!(
-                civil::TimeSecond::new(second),
-                "always valid civil second time"
-            )
-            .to_time()
-            .with_subsec_nanosecond(nanosecond),
-            "always valid civil subsecond"
-        );
+        let time =
+            civil::Time::from_parts_unchecked(hour, minute, second, nanosecond);
+
         civil::DateTime::from_parts(date, time)
     }
 
